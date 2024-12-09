@@ -309,8 +309,7 @@ newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, Stand
             uint8_t epType = StandardUSB::getEndpointType(descriptor);
             if (epType == kIOUSBEndpointTypeInterrupt) {
                 CIntelBTPatcher::_hookPipeInstance = that;
-                if (!CIntelBTPatcher::_interruptPipeAsyncOwner)
-                    CIntelBTPatcher::_interruptPipeAsyncOwner = new AsyncOwnerData;
+                CIntelBTPatcher::_interruptPipeAsyncOwner = new AsyncOwnerData;
                 CIntelBTPatcher::_randomAddressInit = false;
             }
         }
