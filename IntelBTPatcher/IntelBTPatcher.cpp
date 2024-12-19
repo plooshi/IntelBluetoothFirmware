@@ -281,12 +281,14 @@ static void asyncIOCompletion(void* owner, void* parameter, IOReturn status, uin
     }
     if (asyncOwner->action)
         asyncOwner->action(asyncOwner->owner, parameter, status, bytesTransferred);
+    delete asyncOwner;
 }
 
 IOReturn CIntelBTPatcher::
 newAsyncIO(void *that, IOMemoryDescriptor* dataBuffer, uint32_t bytesTransferred, IOUSBHostCompletion* completion, uint32_t completionTimeoutMs)
 {
     if (that == _hookPipeInstance && completion) {
+        AsyncOwnerData _interruptPipeAsyncOwner = new AsyncOwnerData;
         _interruptPipeAsyncOwner->action = completion->action;
         _interruptPipeAsyncOwner->owner = completion->owner;
         _interruptPipeAsyncOwner->dataBuffer = dataBuffer;
@@ -309,8 +311,6 @@ newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, Stand
             uint8_t epType = StandardUSB::getEndpointType(descriptor);
             if (epType == kIOUSBEndpointTypeInterrupt) {
                 CIntelBTPatcher::_hookPipeInstance = that;
-                CIntelBTPatcher::_interruptPipeAsyncOwner = new AsyncOwnerData;
-                CIntelBTPatcher::_randomAddressInit = false;
             }
         }
     }
