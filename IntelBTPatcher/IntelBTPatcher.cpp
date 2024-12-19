@@ -288,7 +288,7 @@ IOReturn CIntelBTPatcher::
 newAsyncIO(void *that, IOMemoryDescriptor* dataBuffer, uint32_t bytesTransferred, IOUSBHostCompletion* completion, uint32_t completionTimeoutMs)
 {
     if (that == _hookPipeInstance && completion) {
-        AsyncOwnerData _interruptPipeAsyncOwner = new AsyncOwnerData;
+        AsyncOwnerData *_interruptPipeAsyncOwner = new AsyncOwnerData;
         _interruptPipeAsyncOwner->action = completion->action;
         _interruptPipeAsyncOwner->owner = completion->owner;
         _interruptPipeAsyncOwner->dataBuffer = dataBuffer;
