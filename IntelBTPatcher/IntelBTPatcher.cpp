@@ -263,7 +263,7 @@ static void asyncIOCompletion(void* owner, void* parameter, IOReturn status, uin
 
     if (dataBuffer && bytesTransferred) {
         void *buffer = IOMalloc(bytesTransferred);
-        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->prepare(kIODirectionOut);
+        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->prepare(kIODirectionInOut);
         dataBuffer->readBytes(0, buffer, bytesTransferred);
         HciEventHdr *hdr = (HciEventHdr *)buffer;
         if (hdr->evt == HCI_EVT_LE_META && hdr->data[0] == HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE) {
@@ -277,7 +277,7 @@ static void asyncIOCompletion(void* owner, void* parameter, IOReturn status, uin
             }
         }
         IOFree(buffer, bytesTransferred);
-        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->complete(kIODirectionOut);
+        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->complete(kIODirectionInOut);
     }
     if (asyncOwner->action)
         asyncOwner->action(asyncOwner->owner, parameter, status, bytesTransferred);
