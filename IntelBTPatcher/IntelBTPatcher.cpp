@@ -186,7 +186,6 @@ IOBufferMemoryDescriptor *writeHCIDescriptor = nullptr;
 #define HCI_OP_LE_SET_SCAN_ENABLE       0x200C
 #define HCI_OP_LE_READ_REMOTE_FEATURES  0x2016
 
-int remoteReadSCount = 0;
 IOReturn CIntelBTPatcher::newHostDeviceRequest(void *that, IOService *provider, StandardUSB::DeviceRequest &request, void *data, IOMemoryDescriptor *descriptor, unsigned int &length, IOUSBHostCompletion *completion, unsigned int timeout)
 {
     HciCommandHdr *hdr = nullptr;
@@ -226,7 +225,6 @@ IOReturn CIntelBTPatcher::newHostDeviceRequest(void *that, IOService *provider, 
                 SYSLOG(DRV_NAME, "[PATCH] Resend LE SCAN PARAM HCI %d", ret);
             }
         } else if (hdr->opcode == HCI_OP_LE_READ_REMOTE_FEATURES) {
-            remoteReadSCount++;
             IOReturn ret = FunctionCast(newHostDeviceRequest, callbackIBTPatcher->oldHostDeviceRequest)(that, provider, request, nullptr, descriptor, length, nullptr, timeout);
             SYSLOG(DRV_NAME, "[PATCH] Sending extra LE Read Remote Features command %d", ret);
         }
@@ -265,23 +263,21 @@ static void asyncIOCompletion(void* owner, void* parameter, IOReturn status, uin
 
     if (dataBuffer && bytesTransferred) {
         void *buffer = IOMalloc(bytesTransferred);
-        if (dataBuffer->getLength() > 0 && (getKernelVersion() < KernelVersion::Sequoia || !dataBuffer->prepare(kIODirectionOut))) {
-            dataBuffer->readBytes(0, buffer, bytesTransferred);
-            HciEventHdr *hdr = (HciEventHdr *)buffer;
-            if (hdr->evt == HCI_EVT_LE_META && hdr->data[0] == HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE) {
-                if (skipExtraReadRemoteFeaturesComplete) skipExtraReadRemoteFeaturesComplete = false;
-                else {
-                    // Copy Connection Handle
-                    fakePhyUpdateCompleteEvent[4] = hdr->data[2];
-                    fakePhyUpdateCompleteEvent[5] = hdr->data[3];
-                    dataBuffer->writeBytes(0, fakePhyUpdateCompleteEvent, 8);
-                    skipExtraReadRemoteFeaturesComplete = true;
-                    remoteReadSCount--;
-                }
+        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->prepare(kIODirectionOut);
+        dataBuffer->readBytes(0, buffer, bytesTransferred);
+        HciEventHdr *hdr = (HciEventHdr *)buffer;
+        if (hdr->evt == HCI_EVT_LE_META && hdr->data[0] == HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE) {
+            if (skipExtraReadRemoteFeaturesComplete) skipExtraReadRemoteFeaturesComplete = false;
+            else {
+                // Copy Connection Handle
+                fakePhyUpdateCompleteEvent[4] = hdr->data[2];
+                fakePhyUpdateCompleteEvent[5] = hdr->data[3];
+                dataBuffer->writeBytes(0, fakePhyUpdateCompleteEvent, 8);
+                skipExtraReadRemoteFeaturesComplete = true;
             }
-            IOFree(buffer, bytesTransferred);
-            if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->complete(kIODirectionOut);
         }
+        IOFree(buffer, bytesTransferred);
+        if (getKernelVersion() >= KernelVersion::Sequoia) dataBuffer->complete(kIODirectionOut);
     }
     if (asyncOwner->action)
         asyncOwner->action(asyncOwner->owner, parameter, status, bytesTransferred);
