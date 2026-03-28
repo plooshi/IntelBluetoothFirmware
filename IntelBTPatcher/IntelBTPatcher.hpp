@@ -74,11 +74,14 @@ public:
     void processKext(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
     static IOReturn newFindQueueRequest(void *that, unsigned short arg1, void *addr, unsigned short arg2, bool arg3, void **hciRequestPtr);
     
-    static IOReturn newHostDeviceRequest(void *that, IOService *provider, StandardUSB::DeviceRequest &request, void *data, IOMemoryDescriptor *descriptor, unsigned int &length,IOUSBHostCompletion *completion, unsigned int timeout);
+    static IOReturn newHostDeviceRequest(void *that, IOService *provider, StandardUSB::DeviceRequest &request, void *data, IOMemoryDescriptor *descriptor, unsigned int &length, IOUSBHostCompletion *completion, unsigned int timeout);
     static IOReturn newAsyncIO(void *that, IOMemoryDescriptor* dataBuffer, uint32_t dataBufferLength, IOUSBHostCompletion* completion, uint32_t completionTimeoutMs);
-    static int newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, StandardUSB::SuperSpeedEndpointCompanionDescriptor const *superDescriptor,AppleUSBHostController *controller, IOUSBHostDevice *device, IOUSBHostInterface *interface, unsigned char, unsigned short);
 
-    
+    // The 2nd parameter changed from SuperSpeedEndpointCompanionDescriptor (Monterey–Sequoia)
+    // to ConfigurationDescriptor (Tahoe+). We declare it as void* so a single hook function
+    // covers all versions — we never dereference it, only pass it straight through.
+    static int newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, void const *companionOrConfigDescriptor, AppleUSBHostController *controller, IOUSBHostDevice *device, IOUSBHostInterface *interface, unsigned char, unsigned short);
+
     mach_vm_address_t oldFindQueueRequest {};
     mach_vm_address_t oldHostDeviceRequest {};
     mach_vm_address_t oldAsyncIO {};
@@ -86,7 +89,6 @@ public:
     
 private:
     static void *_hookPipeInstance;
-    static AsyncOwnerData *_interruptPipeAsyncOwner;
     static bool _randomAddressInit;
 };
 

@@ -37,7 +37,7 @@ PluginConfiguration ADDPR(config) {
     bootargBeta,
     arrsize(bootargBeta),
     KernelVersion::MountainLion,
-    KernelVersion::Sequoia,
+    KernelVersion::Tahoe,
     []() {
         ibtPatcher.init();
     }
@@ -98,7 +98,7 @@ void CIntelBTPatcher::processKext(KernelPatcher &patcher, size_t index, mach_vm_
     if (getKernelVersion() < KernelVersion::Monterey) {
         if (IntelBTPatcher_IOBluetoothInfo.loadIndex == index) {
             DBGLOG(DRV_NAME, "%s", IntelBTPatcher_IOBluetoothInfo.id);
-            
+
             KernelPatcher::RouteRequest findQueueRequestRequest {
                 "__ZN25IOBluetoothHostController17FindQueuedRequestEtP22BluetoothDeviceAddresstbPP21IOBluetoothHCIRequest",
                 newFindQueueRequest,
@@ -111,12 +111,11 @@ void CIntelBTPatcher::processKext(KernelPatcher &patcher, size_t index, mach_vm_
                 SYSLOG(DRV_NAME, "failed to resolve %s, error = %d", findQueueRequestRequest.symbol, patcher.getError());
                 patcher.clearError();
             }
-            
         }
     } else {
         if (IntelBTPatcher_IOUsbHostInfo.loadIndex == index) {
             SYSLOG(DRV_NAME, "%s", IntelBTPatcher_IOUsbHostInfo.id);
-            
+
             KernelPatcher::RouteRequest hostDeviceRequest {
             "__ZN15IOUSBHostDevice13deviceRequestEP9IOServiceRN11StandardUSB13DeviceRequestEPvP18IOMemoryDescriptorRjP19IOUSBHostCompletionj",
                 newHostDeviceRequest,
@@ -143,17 +142,35 @@ void CIntelBTPatcher::processKext(KernelPatcher &patcher, size_t index, mach_vm_
                 patcher.clearError();
             }
 
-            KernelPatcher::RouteRequest initPipeRequest {
-            "__ZN13IOUSBHostPipe28initWithDescriptorsAndOwnersEPKN11StandardUSB18EndpointDescriptorEPKNS0_37SuperSpeedEndpointCompanionDescriptorEP22AppleUSBHostControllerP15IOUSBHostDeviceP18IOUSBHostInterfaceht",
+            // Tahoe (macOS 26) changed the 2nd parameter of initWithDescriptorsAndOwners
+            // from SuperSpeedEndpointCompanionDescriptor to ConfigurationDescriptor.
+            // We try the Tahoe symbol first; if it fails we fall back to the
+            // Monterey–Sequoia symbol. Both route to the same newInitPipe hook,
+            // which uses void* for that parameter so it is safe on all versions.
+
+            KernelPatcher::RouteRequest initPipeTahoeRequest {
+                "__ZN13IOUSBHostPipe28initWithDescriptorsAndOwnersEPKN11StandardUSB18EndpointDescriptorEPKNS0_23ConfigurationDescriptorEP22AppleUSBHostControllerP15IOUSBHostDeviceP18IOUSBHostInterfaceht",
                 newInitPipe,
                 oldInitPipe
             };
-            patcher.routeMultiple(index, &initPipeRequest, 1, address, size);
+            patcher.routeMultiple(index, &initPipeTahoeRequest, 1, address, size);
             if (patcher.getError() == KernelPatcher::Error::NoError) {
-                SYSLOG(DRV_NAME, "routed %s", initPipeRequest.symbol);
+                SYSLOG(DRV_NAME, "routed Tahoe initPipe %s", initPipeTahoeRequest.symbol);
             } else {
-                SYSLOG(DRV_NAME, "failed to resolve %s, error = %d", initPipeRequest.symbol, patcher.getError());
+                // Symbol not found — this is a pre-Tahoe build; try the legacy symbol
                 patcher.clearError();
+                KernelPatcher::RouteRequest initPipeLegacyRequest {
+                    "__ZN13IOUSBHostPipe28initWithDescriptorsAndOwnersEPKN11StandardUSB18EndpointDescriptorEPKNS0_37SuperSpeedEndpointCompanionDescriptorEP22AppleUSBHostControllerP15IOUSBHostDeviceP18IOUSBHostInterfaceht",
+                    newInitPipe,
+                    oldInitPipe
+                };
+                patcher.routeMultiple(index, &initPipeLegacyRequest, 1, address, size);
+                if (patcher.getError() == KernelPatcher::Error::NoError) {
+                    SYSLOG(DRV_NAME, "routed legacy initPipe %s", initPipeLegacyRequest.symbol);
+                } else {
+                    SYSLOG(DRV_NAME, "failed to resolve initPipe on any known version, error = %d", patcher.getError());
+                    patcher.clearError();
+                }
             }
         }
     }
@@ -177,7 +194,7 @@ IOReturn CIntelBTPatcher::newFindQueueRequest(void *that, unsigned short arg1, v
 
 StandardUSB::DeviceRequest randomAddressRequest;
 // Hardcoded Random Address HCI Command
-const uint8_t randomAddressHci[9] = {0x05, 0x20, 0x06, 0x94, 0x50, 0x64, 0xD0, 0x78, 0x6B}; 
+const uint8_t randomAddressHci[9] = {0x05, 0x20, 0x06, 0x94, 0x50, 0x64, 0xD0, 0x78, 0x6B};
 IOBufferMemoryDescriptor *writeHCIDescriptor = nullptr;
 
 #define MAX_HCI_BUF_LEN                 255
@@ -192,7 +209,7 @@ IOReturn CIntelBTPatcher::newHostDeviceRequest(void *that, IOService *provider, 
     HciCommandHdr *hdr = nullptr;
     uint32_t hdrLen = 0;
     char hciBuf[MAX_HCI_BUF_LEN] = {0};
-    
+
     if (data == nullptr) {
         if (descriptor != nullptr &&
             (getKernelVersion() < KernelVersion::Sequoia || !descriptor->prepare(kIODirectionOut))) {
@@ -234,7 +251,7 @@ IOReturn CIntelBTPatcher::newHostDeviceRequest(void *that, IOService *provider, 
         hdrLen = request.wLength - 3;
     }
     if (hdr) {
-        // HCI reset, we need to send Random address again
+        // HCI reset — need to re-send Random Address on next scan
         if (hdr->opcode == HCI_OP_RESET)
             _randomAddressInit = false;
 #if DEBUG
@@ -255,30 +272,19 @@ IOReturn CIntelBTPatcher::newHostDeviceRequest(void *that, IOService *provider, 
 #define HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE 0x04
 
 uint8_t fakePhyUpdateCompleteEvent[8] = {0x3E, 0x06, 0x0C, 0x00, 0x00, 0x00, 0x02, 0x02};
-//uint8_t remoteFeaturesStatus[6] = {0x0F, 0x04, 0x00, 0x01, 0x16, 0x20};
 
 static void asyncIOCompletion(void* owner, void* parameter, IOReturn status, uint32_t bytesTransferred)
 {
     AsyncOwnerData *asyncOwner = (AsyncOwnerData *)owner;
     IOMemoryDescriptor* dataBuffer = asyncOwner->dataBuffer;
     static bool skipExtraReadRemoteFeaturesComplete = true;
-    static bool sentExtraFeaturesStatus = false;
 
     if (dataBuffer && bytesTransferred) {
         void *buffer = IOMalloc(bytesTransferred);
         if (dataBuffer->getLength() > 0 && (getKernelVersion() < KernelVersion::Sequoia || !dataBuffer->prepare(kIODirectionInOut))) {
             dataBuffer->readBytes(0, buffer, bytesTransferred);
             HciEventHdr *hdr = (HciEventHdr *)buffer;
-            /*if (memcmp(hdr, remoteFeaturesStatus, 6) == 0) {
-                if (sentExtraFeaturesStatus) {
-                    asyncOwner->action(asyncOwner->owner, parameter, status, 0);
-                    delete asyncOwner;
-                    sentExtraFeaturesStatus = false;
-                    return;
-                } else {
-                    sentExtraFeaturesStatus = true;
-                }
-            } else */if (hdr->evt == HCI_EVT_LE_META && hdr->data[0] == HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE) {
+            if (hdr->evt == HCI_EVT_LE_META && hdr->data[0] == HCI_EVT_LE_META_READ_REMOTE_FEATURES_COMPLETE) {
                 if (skipExtraReadRemoteFeaturesComplete) skipExtraReadRemoteFeaturesComplete = false;
                 else {
                     fakePhyUpdateCompleteEvent[4] = hdr->data[2];
@@ -315,9 +321,13 @@ newAsyncIO(void *that, IOMemoryDescriptor* dataBuffer, uint32_t bytesTransferred
 #define VENDOR_USB_INTEL 0x8087
 
 int CIntelBTPatcher::
-newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, StandardUSB::SuperSpeedEndpointCompanionDescriptor const *superDescriptor, AppleUSBHostController *controller, IOUSBHostDevice *device, IOUSBHostInterface *interface, unsigned char a7, unsigned short a8)
+newInitPipe(void *that, StandardUSB::EndpointDescriptor const *descriptor, void const *companionOrConfigDescriptor, AppleUSBHostController *controller, IOUSBHostDevice *device, IOUSBHostInterface *interface, unsigned char a7, unsigned short a8)
 {
-    int ret = FunctionCast(newInitPipe, callbackIBTPatcher->oldInitPipe)(that, descriptor, superDescriptor, controller, device, interface, a7, a8);
+    // We pass companionOrConfigDescriptor straight through without dereferencing it.
+    // On Monterey–Sequoia it is a SuperSpeedEndpointCompanionDescriptor*.
+    // On Tahoe+ it is a ConfigurationDescriptor*.
+    // Both cases work identically at ABI level since we never inspect the value.
+    int ret = FunctionCast(newInitPipe, callbackIBTPatcher->oldInitPipe)(that, descriptor, companionOrConfigDescriptor, controller, device, interface, a7, a8);
     if (device) {
         const StandardUSB::DeviceDescriptor *deviceDescriptor = device->getDeviceDescriptor();
         if (deviceDescriptor &&
